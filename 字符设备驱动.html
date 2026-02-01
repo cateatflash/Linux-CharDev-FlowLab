@@ -1,0 +1,1729 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>由浅入深：字符设备驱动框架交互动画（用户态 ⇄ 内核态）</title>
+  <style>
+    :root{
+      --bg:#0b1020;
+      --panel:#101a33;
+      --panel2:#13555f;
+      --text:#e7ecff;
+      --muted:#aeb8e6;
+      --line:rgba(255,255,255,.12);
+      --accent:#7aa2ff;
+      --good:#3ddc97;
+      --warn:#ffcc66;
+      --bad:#ff6b6b;
+      --kernel:#1b2a5a;
+      --user:#1f4b3a;
+      --chip:#0c1533;
+      --shadow: 0 10px 30px rgba(0,0,0,.35);
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      --sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans", "PingFang SC", "Microsoft Yahei", sans-serif;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family:var(--sans);
+      color:var(--text);
+      background: radial-gradient(1200px 800px at 15% 15%, rgba(122,162,255,.15), transparent 60%),
+                  radial-gradient(900px 600px at 85% 25%, rgba(61,220,151,.12), transparent 55%),
+                  radial-gradient(900px 700px at 40% 95%, rgba(255,204,102,.10), transparent 55%),
+                  var(--bg);
+      min-height:100vh;
+    }
+
+    header{
+      padding:22px 18px 10px;
+      max-width:1200px;
+      margin:0 auto;
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:14px;
+    }
+    .title{
+      display:flex;
+      flex-direction:column;
+      gap:6px;
+    }
+    .title h1{margin:0;font-size:18px;letter-spacing:.2px}
+    .title p{margin:0;color:var(--muted);font-size:13px;line-height:1.35}
+
+    .kbd{
+      font-family:var(--mono);
+      font-size:12px;
+      color:rgba(231,236,255,.9);
+      background:rgba(255,255,255,.06);
+      border:1px solid rgba(255,255,255,.10);
+      padding:2px 6px;
+      border-radius:7px;
+      display:inline-block;
+    }
+
+    .wrap{
+      max-width:1200px;
+      margin:0 auto;
+      padding:0 18px 24px;
+      display:grid;
+      grid-template-columns: 1.1fr .9fr;
+      gap:14px;
+    }
+
+    .card{
+      background:linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02));
+      border:1px solid rgba(255,255,255,.10);
+      border-radius:16px;
+      box-shadow:var(--shadow);
+      overflow:hidden;
+    }
+    .card .hd{
+      padding:12px 14px;
+      border-bottom:1px solid rgba(255,255,255,.10);
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      background:rgba(255,255,255,.03);
+    }
+    .card .hd .left{display:flex;align-items:center;gap:10px}
+    .badge{
+      font-size:11px;
+      padding:2px 8px;
+      border-radius:999px;
+      border:1px solid rgba(255,255,255,.16);
+      background:rgba(255,255,255,.06);
+      color:rgba(231,236,255,.92);
+    }
+    .badge.kernel{border-color:rgba(122,162,255,.35); background:rgba(122,162,255,.12)}
+    .badge.user{border-color:rgba(61,220,151,.35); background:rgba(61,220,151,.12)}
+
+    .btnrow{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+    button{
+      cursor:pointer;
+      border:1px solid rgba(255,255,255,.16);
+      background:rgba(255,255,255,.06);
+      color:var(--text);
+      padding:8px 10px;
+      border-radius:12px;
+      font-size:13px;
+      transition:transform .05s ease, background .2s ease, border-color .2s ease;
+      user-select:none;
+    }
+    button:hover{background:rgba(255,255,255,.10)}
+    button:active{transform:translateY(1px)}
+    button.primary{border-color:rgba(122,162,255,.35); background:rgba(122,162,255,.14)}
+    button.primary:hover{background:rgba(122,162,255,.20)}
+    button.danger{border-color:rgba(255,107,107,.35); background:rgba(255,107,107,.14)}
+    button.danger:hover{background:rgba(255,107,107,.20)}
+    button:disabled{opacity:.45; cursor:not-allowed}
+
+    .content{padding:14px}
+
+    .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .mini{
+      background:rgba(0,0,0,.18);
+      border:1px solid rgba(255,255,255,.10);
+      border-radius:14px;
+      overflow:hidden;
+    }
+    .mini .mh{padding:10px 12px;border-bottom:1px solid rgba(255,255,255,.10);color:rgba(231,236,255,.92);font-size:12px;background:rgba(255,255,255,.03)}
+    .mini .mb{padding:10px 12px;color:var(--muted);font-size:12px;line-height:1.45}
+
+    .diagram{
+      height:720px;
+      position:relative;
+      background:linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.00));
+    }
+    .lane{
+      position:absolute;
+      top:14px;
+      bottom:14px;
+      width:calc(50% - 18px);
+      border-radius:16px;
+      border:1px solid rgba(255,255,255,.10);
+      padding:12px;
+      overflow:hidden;
+    }
+    .lane.user{left:14px;background:linear-gradient(180deg, rgba(61,220,151,.10), rgba(0,0,0,.12))}
+    .lane.kernel{right:14px;background:linear-gradient(180deg, rgba(122,162,255,.12), rgba(0,0,0,.12))}
+    .lane h3{margin:0 0 10px;font-size:12px;color:rgba(231,236,255,.92);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+    .lane h3 span{color:var(--muted);font-weight:500;flex:1 1 100%;font-size:11px}
+
+    .node{
+      position:relative;
+      border-radius:16px;
+      border:1px solid rgba(255,255,255,.12);
+      background:rgba(0,0,0,.18);
+      padding:10px 10px 9px;
+      margin:10px 0;
+      box-shadow: 0 10px 25px rgba(0,0,0,.22);
+      transition: outline .2s ease, transform .2s ease, border-color .2s ease;
+    }
+    .node .t{font-size:12px;color:rgba(231,236,255,.95);display:flex;align-items:center;gap:8px}
+    .node .s{margin-top:6px;font-family:var(--mono);font-size:11px;color:rgba(231,236,255,.68)}
+
+    .node[data-kind="obj"]{border-style:dashed}
+
+    .hl{
+      outline:2px solid rgba(255,255,255,.0);
+    }
+    .hl.active{
+      outline-color: rgba(255,204,102,.8);
+      transform: translateY(-1px);
+      border-color: rgba(255,204,102,.55);
+    }
+
+    .arrowlayer{
+      position:absolute; inset:0;
+      pointer-events:none;
+    }
+
+    /* right column */
+    .steps{
+      max-height:540px;
+      overflow:auto;
+      padding:0;
+      margin:0;
+      list-style:none;
+    }
+    .step{
+      padding:12px 14px;
+      border-bottom:1px solid rgba(255,255,255,.08);
+      display:flex;
+      gap:10px;
+      align-items:flex-start;
+      cursor:pointer;
+      background:transparent;
+      transition:background .2s ease;
+    }
+    .step:hover{background:rgba(255,255,255,.04)}
+    .step.active{background:rgba(255,204,102,.12)}
+    .step .n{
+      width:24px;height:24px;border-radius:9px;
+      display:grid;place-items:center;
+      background:rgba(255,255,255,.06);
+      border:1px solid rgba(255,255,255,.12);
+      color:rgba(231,236,255,.9);
+      font-family:var(--mono);
+      font-size:12px;
+      flex:0 0 auto;
+    }
+    .step .meta{flex:1}
+    .step .meta .h{font-size:12px;color:rgba(231,236,255,.95)}
+    .step .meta .d{margin-top:6px;font-size:12px;color:var(--muted);line-height:1.45}
+
+    .console{
+      background:rgba(0,0,0,.25);
+      border:1px solid rgba(255,255,255,.10);
+      border-radius:14px;
+      overflow:hidden;
+      margin-top:12px;
+    }
+    .console .ch{padding:10px 12px;border-bottom:1px solid rgba(255,255,255,.10);font-size:12px;color:rgba(231,236,255,.92);display:flex;justify-content:space-between;align-items:center;background:rgba(255,255,255,.03)}
+    .console pre{
+      margin:0;
+      padding:10px 12px;
+      max-height:180px;
+      overflow:auto;
+      font-family:var(--mono);
+      font-size:11px;
+      color:rgba(231,236,255,.80);
+      line-height:1.55;
+      white-space:pre-wrap;
+    }
+
+    .inspector{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap:10px;
+      margin-top:12px;
+    }
+
+    .kv{
+      display:grid;
+      grid-template-columns: 120px 1fr;
+      gap:8px;
+      align-items:center;
+      padding:8px 10px;
+      border-bottom:1px solid rgba(255,255,255,.08);
+    }
+    .kv:last-child{border-bottom:none}
+    .k{color:rgba(231,236,255,.86);font-size:12px}
+    .v{color:var(--muted);font-family:var(--mono);font-size:11px;word-break:break-word}
+
+    .pill{
+      display:inline-flex;align-items:center;gap:6px;
+      padding:2px 8px;
+      border-radius:999px;
+      border:1px solid rgba(255,255,255,.14);
+      background:rgba(255,255,255,.06);
+      font-size:11px;
+      color:rgba(231,236,255,.92);
+    }
+    .dot{width:8px;height:8px;border-radius:50%}
+    .dot.good{background:var(--good)}
+    .dot.bad{background:var(--bad)}
+    .dot.warn{background:var(--warn)}
+    .dot.kernel{background:var(--accent)}
+
+    .footer{
+      max-width:1200px;
+      margin:0 auto;
+      padding:0 18px 18px;
+      color:var(--muted);
+      font-size:12px;
+      line-height:1.45;
+    }
+    .footer code{font-family:var(--mono); font-size:11px}
+
+    /* flow builder */
+    .flow-wrap{margin-top:14px;grid-template-columns:1fr}
+    .flow-grid{display:grid;grid-template-columns:.9fr 1.2fr .9fr;gap:12px}
+    .flow-panel .mini{height:100%}
+    .flow-tip{color:var(--muted);font-size:11px;line-height:1.45;margin-bottom:8px}
+    .flow-canvas{
+      min-height:420px;
+      border:1px dashed rgba(255,255,255,.16);
+      border-radius:14px;
+      padding:10px;
+      background:rgba(0,0,0,.16);
+    }
+    .flow-palette,.flow-list{display:flex;flex-direction:column;gap:8px}
+    .flow-empty{color:var(--muted);font-size:12px;padding:12px 6px}
+    .flow-card{
+      border-radius:12px;
+      border:1px solid rgba(255,255,255,.12);
+      background:rgba(0,0,0,.18);
+      padding:10px;
+      cursor:grab;
+      box-shadow:0 8px 18px rgba(0,0,0,.2);
+      transition:border-color .2s ease, transform .2s ease, outline .2s ease;
+    }
+    .palette-card{cursor:pointer}
+    .flow-card:active{cursor:grabbing}
+    .flow-card.active{outline:2px solid rgba(255,204,102,.75);border-color:rgba(255,204,102,.55)}
+    .flow-card.dragging{opacity:.45}
+    .flow-card[data-domain="user"]{border-color:rgba(61,220,151,.35)}
+    .flow-card[data-domain="kernel"]{border-color:rgba(122,162,255,.35)}
+    .flow-card .top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+    .flow-card .name{font-family:var(--mono);font-size:12px;color:rgba(231,236,255,.95)}
+    .flow-card .desc{margin-top:6px;font-size:11px;color:var(--muted);line-height:1.4}
+    button.flow-remove{
+      padding:2px 6px;
+      border-radius:8px;
+      font-size:11px;
+      border:1px solid rgba(255,255,255,.14);
+      background:rgba(255,255,255,.04);
+    }
+    .flow-status{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}
+
+    /* responsive */
+    @media (max-width: 980px){
+      .wrap{grid-template-columns:1fr;}
+      .diagram{height:640px}
+      .steps{max-height:420px}
+      .inspector{grid-template-columns:1fr}
+      .flow-grid{grid-template-columns:1fr}
+      .flow-canvas{min-height:320px}
+    }
+  </style>
+</head>
+<body>
+<header>
+  <div class="title">
+    <h1>字符设备驱动框架交互动画：从 <span class="kbd">insmod</span> 到 <span class="kbd">open()</span> 进入 <span class="kbd">.open</span></h1>
+    <p>
+      用“单步调试”的方式理解：设备号(dev_t) → cdev → fops → /dev 节点 → VFS 路由。<br>
+      快捷键：<span class="kbd">→</span> 下一步 / <span class="kbd">←</span> 上一步 / <span class="kbd">Space</span> 播放暂停 / <span class="kbd">R</span> 重置
+    </p>
+  </div>
+  <div class="btnrow">
+    <button id="btnPrev">← 上一步</button>
+    <button id="btnNext" class="primary">下一步 →</button>
+    <button id="btnPlay">▶ 播放</button>
+    <button id="btnReset" class="danger">重置</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <!-- left: diagram -->
+  <section class="card">
+    <div class="hd">
+      <div class="left">
+        <span class="badge user">用户态</span>
+        <span class="badge kernel">内核态</span>
+        <span class="badge" id="phaseBadge">阶段：注册线</span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
+        <span class="pill"><span class="dot warn"></span> 当前高亮</span>
+        <span class="pill"><span class="dot good"></span> 已建立</span>
+        <span class="pill"><span class="dot bad"></span> 未建立</span>
+      </div>
+    </div>
+    <div class="content diagram" id="diagram">
+      <svg class="arrowlayer" id="arrows" viewBox="0 0 1000 560" preserveAspectRatio="none">
+        <defs>
+          <marker id="arrowHead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(255,204,102,.9)"></path>
+          </marker>
+          <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+            <feMerge>
+              <feMergeNode in="coloredBlur"/>
+              <feMergeNode in="SourceGraphic"/>
+            </feMerge>
+          </filter>
+        </defs>
+        <path id="animPath" d="" stroke="rgba(255,204,102,.9)" stroke-width="2.5" fill="none" marker-end="url(#arrowHead)" filter="url(#glow)" stroke-dasharray="7 7" />
+      </svg>
+
+      <div class="lane user" id="laneUser">
+        <h3>用户态 <span>（shell / app / udev）</span></h3>
+
+        <div class="node hl" id="u_insmod">
+          <div class="t">🧩 insmod</div>
+          <div class="s">用户态加载模块 → 触发内核执行 module_init()</div>
+        </div>
+
+        <div class="node hl" id="u_udev" data-kind="obj">
+          <div class="t">🛠 udev / mdev</div>
+          <div class="s">监听 uevent → mknod/chmod 创建 /dev 节点</div>
+        </div>
+
+        <div class="node hl" id="u_app">
+          <div class="t">📦 app</div>
+          <div class="s">open("/dev/LED") / write(fd, 1)</div>
+        </div>
+
+        <div class="node hl" id="u_devnode" data-kind="obj">
+          <div class="t">🚪 /dev/LED</div>
+          <div class="s">字符设备节点：只存 dev_t(major:minor)</div>
+        </div>
+      </div>
+
+      <div class="lane kernel" id="laneKernel">
+        <h3>内核态 <span>（VFS / chrdev / sysfs）</span></h3>
+
+        <div class="node hl" id="k_module">
+          <div class="t">🐧 module_init()</div>
+          <div class="s">驱动入口：申请设备号、cdev_add、device_create</div>
+        </div>
+
+        <div class="node hl" id="k_devt" data-kind="obj">
+          <div class="t">🏷 dev_t（major:minor）</div>
+          <div class="s">门牌号：决定“找哪个字符设备”</div>
+        </div>
+
+        <div class="node hl" id="k_cdev" data-kind="obj">
+          <div class="t">🧭 cdev（字符设备实体）</div>
+          <div class="s">dev_t → fops 的映射入口（cdev_add 建立）</div>
+        </div>
+
+        <div class="node hl" id="k_fops" data-kind="obj">
+          <div class="t">📜 file_operations（fops）</div>
+          <div class="s">.open/.read/.write 函数指针表</div>
+        </div>
+
+        <div class="node hl" id="k_sysfs" data-kind="obj">
+          <div class="t">🗂 sysfs (/sys/class/...)</div>
+          <div class="s">device_create 生成设备对象 + dev 文件 + uevent</div>
+        </div>
+
+        <div class="node hl" id="k_vfs">
+          <div class="t">🧱 VFS</div>
+          <div class="s">open 路径解析 → inode(i_rdev) → chrdev 路由</div>
+        </div>
+
+        <div class="node hl" id="k_driver">
+          <div class="t">🔌 你的驱动函数</div>
+          <div class="s">char_open / char_write / copy_from_user</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- right: stepper + inspector -->
+  <section class="card">
+    <div class="hd">
+      <div class="left">
+        <span class="badge" id="stepBadge">步骤 1/12</span>
+        <span class="badge" id="modeBadge">模式：单步调试</span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
+        <span class="pill" id="domainPill"><span class="dot warn"></span><span id="domainText">当前：用户态 → 内核态</span></span>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="grid2">
+        <div class="mini">
+          <div class="mh">本步在讲什么</div>
+          <div class="mb" id="stepExplain">—</div>
+        </div>
+        <div class="mini">
+          <div class="mh">本步你能“观察到什么”</div>
+          <div class="mb" id="stepObserve">—</div>
+        </div>
+      </div>
+
+      <div class="console">
+        <div class="ch">
+          <div>“伪 dmesg / 伪 strace”输出</div>
+          <button id="btnClearLog" style="padding:6px 10px;border-radius:10px;font-size:12px">清空</button>
+        </div>
+        <pre id="log"></pre>
+      </div>
+
+      <div class="inspector">
+        <div class="mini">
+          <div class="mh">对象检查器（当前系统状态）</div>
+          <div class="mb" style="padding:0">
+            <div class="kv"><div class="k">dev_t</div><div class="v" id="st_devt">未分配</div></div>
+            <div class="kv"><div class="k">cdev_add</div><div class="v" id="st_cdev">未建立</div></div>
+            <div class="kv"><div class="k">fops 绑定</div><div class="v" id="st_fops">未绑定</div></div>
+            <div class="kv"><div class="k">sysfs 设备</div><div class="v" id="st_sysfs">不存在</div></div>
+            <div class="kv"><div class="k">/dev 节点</div><div class="v" id="st_devnode">不存在</div></div>
+            <div class="kv"><div class="k">file->f_op</div><div class="v" id="st_fileop">未设置</div></div>
+          </div>
+        </div>
+
+        <div class="mini">
+          <div class="mh">“调用栈”模拟（帮助你脑内调试）</div>
+          <div class="mb" style="padding:0">
+            <div class="kv"><div class="k">用户态</div><div class="v" id="stack_user">(空)</div></div>
+            <div class="kv"><div class="k">内核态</div><div class="v" id="stack_kernel">(空)</div></div>
+            <div class="kv"><div class="k">备注</div><div class="v" id="stack_note">—</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mini" style="margin-top:12px">
+        <div class="mh">步骤列表（可点击跳转）</div>
+        <ul class="steps" id="steps"></ul>
+      </div>
+
+    </div>
+  </section>
+</div>
+
+<div class="wrap flow-wrap">
+  <section class="card" id="flowBuilder">
+    <div class="hd">
+      <div class="left">
+        <span class="badge">新建代码流仿真</span>
+        <span class="badge" id="flowModeBadge">模式：编辑</span>
+      </div>
+      <div class="btnrow">
+        <button id="btnFlowSample">载入示例</button>
+        <button id="btnFlowStep" class="primary">单步</button>
+        <button id="btnFlowPlay">播放</button>
+        <button id="btnFlowReset">重置</button>
+        <button id="btnFlowClear" class="danger">清空</button>
+      </div>
+    </div>
+    <div class="content flow-grid">
+      <div class="flow-panel">
+        <div class="mini">
+          <div class="mh">函数卡片库</div>
+          <div class="mb">
+            <div class="flow-tip">点击左侧函数卡片添加到中间画布，再拖动排序组成完整流程。</div>
+            <div class="flow-palette" id="flowPalette"></div>
+          </div>
+        </div>
+      </div>
+      <div class="flow-panel">
+        <div class="mini">
+          <div class="mh">代码流画布（可拖动排序）</div>
+          <div class="mb">
+            <div class="flow-canvas" id="flowCanvas">
+              <div class="flow-list" id="flowList"></div>
+              <div class="flow-empty" id="flowEmpty">提示：先点击卡片或点击“载入示例”</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="flow-panel">
+        <div class="mini">
+          <div class="mh">调试视图（堆栈 / 切换 / 相关信息）</div>
+          <div class="mb">
+            <div class="flow-status">
+              <span class="pill" id="flowDomainPill"><span class="dot warn"></span><span id="flowDomainText">当前：未开始</span></span>
+              <span class="pill" id="flowPhasePill">阶段：-</span>
+            </div>
+            <div class="kv"><div class="k">当前卡片</div><div class="v" id="flowCurrent">（空）</div></div>
+            <div class="kv"><div class="k">说明</div><div class="v" id="flowExplain">-</div></div>
+            <div class="kv"><div class="k">态切换</div><div class="v" id="flowSwitch">-</div></div>
+
+            <div class="mini" style="margin-top:10px">
+              <div class="mh">堆栈变化</div>
+              <div class="mb" style="padding:0">
+                <div class="kv"><div class="k">用户态栈</div><div class="v" id="flowStackUser">(空)</div></div>
+                <div class="kv"><div class="k">内核态栈</div><div class="v" id="flowStackKernel">(空)</div></div>
+                <div class="kv"><div class="k">备注</div><div class="v" id="flowStackNote">-</div></div>
+              </div>
+            </div>
+
+            <div class="mini" style="margin-top:10px">
+              <div class="mh">状态面板</div>
+              <div class="mb" style="padding:0">
+                <div class="kv"><div class="k">dev_t</div><div class="v" id="flowStateDevt">未分配</div></div>
+                <div class="kv"><div class="k">cdev_add</div><div class="v" id="flowStateCdev">未建立</div></div>
+                <div class="kv"><div class="k">fops 绑定</div><div class="v" id="flowStateFops">未绑定</div></div>
+                <div class="kv"><div class="k">sysfs 设备</div><div class="v" id="flowStateSysfs">不存在</div></div>
+                <div class="kv"><div class="k">/dev 节点</div><div class="v" id="flowStateDevnode">不存在</div></div>
+                <div class="kv"><div class="k">file->f_op</div><div class="v" id="flowStateFileop">未设置</div></div>
+              </div>
+            </div>
+
+            <div class="console">
+              <div class="ch">
+                <div>代码流日志</div>
+                <button id="btnFlowClearLog" style="padding:6px 10px;border-radius:10px;font-size:12px">清空</button>
+              </div>
+              <pre id="flowLog"></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div class="footer">
+  <p>
+    你可以把这个页面当“交互式注释”：每一步都会高亮相关对象，并在右侧展示“本步解释 / 可观察现象 / 伪日志 / 对象状态 / 调用栈”。
+    若你想对接真实环境：把右侧的“可观察现象”对应到你板子上真实命令，例如：<code>ls -l /dev/LED</code>、<code>cat /sys/class/chrdev_class/LED/dev</code>、<code>dmesg -w</code>。
+  </p>
+</div>
+
+<script>
+  // --- tiny helpers ---
+  const $ = (id)=>document.getElementById(id);
+  const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+  // --- simulated state ---
+  const state = {
+    devt: null,
+    cdevAdded: false,
+    fopsBound: false,
+    sysfs: false,
+    devnode: false,
+    fileop: false,
+    userStack: [],
+    kernelStack: [],
+    phase: '注册线',
+    playing: false,
+    timer: null,
+  };
+
+  // --- steps definition ---
+  const steps = [
+    {
+      title: '从用户态开始：insmod',
+      domain: 'user->kernel',
+      phase: '注册线',
+      explain: '你在 shell 输入 insmod LED.ko。insmod 是用户态程序，它会通过系统调用把模块交给内核加载。',
+      observe: '你能看到：dmesg 里出现模块加载/打印信息；此时 /dev/LED 可能还不存在。',
+      highlight: ['u_insmod','k_module'],
+      path: ['u_insmod','k_module'],
+      log: [
+        '$ insmod LED.ko',
+        '[kernel] finit_module(): load module into kernel',
+        '[kernel] -> call module_init()'
+      ],
+      stack: {
+        user: ['insmod'],
+        kernel: ['finit_module','do_init_module','module_init'],
+        note: '从用户态进入内核态：系统调用触发模块加载'
+      }
+    },
+    {
+      title: 'module_init：申请设备号（静态/动态）',
+      domain: 'kernel',
+      phase: '注册线',
+      explain: '驱动 init 中先拿到 dev_t（门牌号）。静态：register_chrdev_region(MKDEV(ma,mi))；动态：alloc_chrdev_region(&dev).',
+      observe: '你能看到：驱动 printk 输出 major/minor；/proc/devices 里可能出现你的设备名。',
+      highlight: ['k_module','k_devt'],
+      path: ['k_module','k_devt'],
+      apply(){
+        state.devt = '255:0 (示例)';
+      },
+      log: [
+        '[kernel] alloc_chrdev_region(&devt, 0, 1, "LED")',
+        '[kernel] -> devt = (major=255, minor=0)'
+      ],
+      stack: {
+        user: [],
+        kernel: ['module_init','alloc_chrdev_region'],
+        note: 'dev_t 只是门牌号：此时还没有把门牌号映射到你的 fops'
+      }
+    },
+    {
+      title: 'cdev_init：把 fops 交给 cdev',
+      domain: 'kernel',
+      phase: '注册线',
+      explain: 'cdev_init(&cdev, &fops) 等价于“把服务清单(fops)交给接线员(cdev)”。',
+      observe: '你通常看不到外部现象，但这是之后 open 能进 .open 的前提之一。',
+      highlight: ['k_cdev','k_fops'],
+      path: ['k_fops','k_cdev'],
+      apply(){ state.fopsBound = true; },
+      log: [
+        '[kernel] cdev_init(&cdev, &file_operations)',
+        '[kernel] -> cdev.ops = fops (open/read/write 指针表)'
+      ],
+      stack: {
+        user: [],
+        kernel: ['module_init','cdev_init'],
+        note: '把“怎么处理 open/write”先挂到 cdev 上'
+      }
+    },
+    {
+      title: 'cdev_add：建立 dev_t → cdev 的映射（最关键）',
+      domain: 'kernel',
+      phase: '注册线',
+      explain: 'cdev_add(&cdev, devt, 1) 把“门牌号(dev_t)”登记到内核字符设备映射表。之后 VFS 看到 major/minor 才能找到你的 cdev。',
+      observe: '此时 open 才“有机会”路由到你的 fops；但 /dev/LED 可能仍未出现（还缺设备节点）。',
+      highlight: ['k_devt','k_cdev'],
+      path: ['k_devt','k_cdev'],
+      apply(){ state.cdevAdded = true; },
+      log: [
+        '[kernel] cdev_add(&cdev, devt=255:0, count=1)',
+        '[kernel] -> chrdev map: (255:0) => this cdev'
+      ],
+      stack: {
+        user: [],
+        kernel: ['module_init','cdev_add'],
+        note: '没有这一步：/dev 节点就算存在，open 也找不到你的 fops'
+      }
+    },
+    {
+      title: 'class_create：在 sysfs 建一个“类别”',
+      domain: 'kernel',
+      phase: '注册线',
+      explain: 'class_create 创建 /sys/class/chrdev_class/。它是给用户空间(udev)看的后台档案柜。',
+      observe: '你能看到：/sys/class 下出现 chrdev_class。',
+      highlight: ['k_sysfs'],
+      path: ['k_module','k_sysfs'],
+      log: [
+        '[kernel] class_create("chrdev_class")',
+        '[kernel] -> /sys/class/chrdev_class created'
+      ],
+      stack: {
+        user: [],
+        kernel: ['module_init','class_create'],
+        note: '这一步不直接影响 open 路由，但影响 /dev 节点是否能自动创建'
+      }
+    },
+    {
+      title: 'device_create：生成 sysfs 设备对象并触发 uevent',
+      domain: 'kernel->user',
+      phase: '注册线',
+      explain: 'device_create 会在 /sys/class/chrdev_class/LED/ 下创建设备对象，并写出 dev 文件(major:minor)。同时发 uevent 通知用户空间“有新设备”。',
+      observe: '你能看到：/sys/class/chrdev_class/LED/dev 内容为 255:0。',
+      highlight: ['k_sysfs','u_udev'],
+      path: ['k_sysfs','u_udev'],
+      apply(){ state.sysfs = true; },
+      log: [
+        '[kernel] device_create(..., devt=255:0, name="LED")',
+        '[kernel] -> /sys/class/chrdev_class/LED/dev = "255:0"',
+        '[kernel] -> uevent: add@/class/chrdev_class/LED'
+      ],
+      stack: {
+        user: ['udev listens uevent'],
+        kernel: ['module_init','device_create','kobject_uevent'],
+        note: '从内核发消息到用户态：udev/mdev 会据此创建 /dev 节点'
+      }
+    },
+    {
+      title: 'udev/mdev：在用户态创建 /dev/LED（mknod/chmod）',
+      domain: 'user->kernel',
+      phase: '注册线',
+      explain: 'udev/mdev 收到 uevent 后读取 sysfs 的 dev 文件，得到 major/minor，然后调用 mknod/chmod（系统调用回到内核）在 /dev 下创建设备节点。',
+      observe: '你能看到：/dev/LED 出现；ls -l 显示 crw... 255,0。',
+      highlight: ['u_udev','u_devnode'],
+      path: ['u_udev','u_devnode'],
+      apply(){ state.devnode = true; },
+      log: [
+        '[user] udev: read /sys/class/chrdev_class/LED/dev -> 255:0',
+        '[user] udev: mknod /dev/LED c 255 0',
+        '[kernel] mknodat(): create char dev node with i_rdev=255:0',
+        '[user] udev: chmod 0666 /dev/LED'
+      ],
+      stack: {
+        user: ['udev','mknod','chmod'],
+        kernel: ['mknodat','vfs_create'],
+        note: '这是经典的“内核→用户→内核”闭环'
+      }
+    },
+    {
+      title: '切到调用线：app 调用 open("/dev/LED")',
+      domain: 'user->kernel',
+      phase: '调用线',
+      explain: '用户态 app 调 open("/dev/LED")。VFS 解析路径找到 /dev/LED 的 inode，发现它是字符设备，并从 inode->i_rdev 读出 major/minor。',
+      observe: '你能看到：如果驱动 .open 里 printk，这一步会触发 printk（后面几步完成后）。',
+      highlight: ['u_app','u_devnode','k_vfs'],
+      path: ['u_devnode','k_vfs'],
+      log: [
+        '[user] fd = open("/dev/LED", O_RDWR)',
+        '[kernel] vfs_open(): lookup path -> inode',
+        '[kernel] inode->i_mode = S_IFCHR, inode->i_rdev = 255:0'
+      ],
+      stack: {
+        user: ['app:open'],
+        kernel: ['sys_openat','do_sys_open','do_filp_open','vfs_open'],
+        note: 'open 的关键输入就是 i_rdev(门牌号)'
+      }
+    },
+    {
+      title: 'VFS 路由：用 major/minor 找到 cdev',
+      domain: 'kernel',
+      phase: '调用线',
+      explain: 'VFS 看到 S_IFCHR 后，会进入字符设备打开路径：根据 (major,minor) 去 chrdev 映射表查找对应的 cdev（你之前 cdev_add 建立的映射）。',
+      observe: '如果没有 cdev_add：这里会失败，open 返回错误。',
+      highlight: ['k_vfs','k_cdev','k_devt'],
+      path: ['k_vfs','k_cdev'],
+      log: [
+        '[kernel] chrdev_open(): lookup chrdev map by 255:0',
+        '[kernel] -> found cdev for 255:0'
+      ],
+      stack: {
+        user: [],
+        kernel: ['vfs_open','chrdev_open','kobj_lookup'],
+        note: 'cdev 是“门牌号→服务清单”的入口'
+      }
+    },
+    {
+      title: 'file->f_op = cdev->ops（fops 装载到本次 open 的 file 对象）',
+      domain: 'kernel',
+      phase: '调用线',
+      explain: '找到 cdev 后，内核会把你的 fops 赋给 file->f_op。之后 write/read 直接走 file->f_op->write/read。',
+      observe: '你能理解：为什么 open 一次后，后续 write 更快（不必再查映射）。',
+      highlight: ['k_fops','k_vfs'],
+      path: ['k_cdev','k_fops'],
+      apply(){ state.fileop = true; },
+      log: [
+        '[kernel] file->f_op = cdev->ops',
+        '[kernel] -> file now holds pointers: .open/.write/...' 
+      ],
+      stack: {
+        user: [],
+        kernel: ['chrdev_open','set_fops'],
+        note: '这一步之后，write(fd,...) 会直接跳到你的 .write'
+      }
+    },
+    {
+      title: '调用你的 .open（进入驱动函数）',
+      domain: 'kernel',
+      phase: '调用线',
+      explain: '内核最后调用 file->f_op->open(...)，也就是你的 char_open()。从此你就能在 open 里初始化硬件/分配 private_data 等。',
+      observe: '你能看到：dmesg 里出现 "open successful"。',
+      highlight: ['k_driver'],
+      path: ['k_vfs','k_driver'],
+      log: [
+        '[kernel] call fops->open(inode, file)',
+        '[driver] char_open(): printk("open successful")'
+      ],
+      stack: {
+        user: [],
+        kernel: ['vfs_open','chrdev_open','fops->open','char_open'],
+        note: 'open 已完成：file 结构体已绑定 fops'
+      }
+    },
+    {
+      title: 'write(fd, 1)：进入你的 .write（copy_from_user）',
+      domain: 'user->kernel',
+      phase: '调用线',
+      explain: '用户态 write(fd, "\x01", 1)。内核通过 file->f_op->write 直接跳到你的 char_write()。你用 copy_from_user 把用户态数据安全拷到内核，再驱动硬件。',
+      observe: '你能看到：LED 变化（硬件层面）+ dmesg 打印（如果你打印）。',
+      highlight: ['u_app','k_driver'],
+      path: ['u_app','k_driver'],
+      log: [
+        '[user] write(fd, 1)',
+        '[kernel] vfs_write() -> file->f_op->write',
+        '[driver] char_write(): copy_from_user()',
+        '[driver] led_switch(LEDON)'
+      ],
+      stack: {
+        user: ['app:write'],
+        kernel: ['sys_write','vfs_write','fops->write','char_write','copy_from_user'],
+        note: 'write 不再查 dev_t→cdev，因为 file->f_op 已经设置好了'
+      }
+    }
+  ];
+
+  // --- UI: render steps list ---
+  const stepsEl = $('steps');
+  steps.forEach((s, i)=>{
+    const li = document.createElement('li');
+    li.className = 'step';
+    li.dataset.idx = i;
+    li.innerHTML = `
+      <div class="n">${i+1}</div>
+      <div class="meta">
+        <div class="h">${s.title}</div>
+        <div class="d">${s.explain}</div>
+      </div>
+    `;
+    li.addEventListener('click', ()=>gotoStep(i));
+    stepsEl.appendChild(li);
+  });
+
+  // --- highlight helpers ---
+  const allNodes = [
+    'u_insmod','u_udev','u_app','u_devnode',
+    'k_module','k_devt','k_cdev','k_fops','k_sysfs','k_vfs','k_driver'
+  ].map($);
+
+  function clearHighlights(){
+    allNodes.forEach(n=>n.classList.remove('active'));
+  }
+
+  function setHighlights(ids){
+    clearHighlights();
+    ids.forEach(id=>{ const el=$(id); if(el) el.classList.add('active'); });
+  }
+
+  // --- arrow drawing between nodes ---
+  function centerOf(el){
+    const r = el.getBoundingClientRect();
+    const host = $('diagram').getBoundingClientRect();
+    // map to svg viewBox coords (1000x560)
+    const x = ( (r.left + r.right)/2 - host.left ) / host.width * 1000;
+    const y = ( (r.top + r.bottom)/2 - host.top ) / host.height * 560;
+    return {x, y};
+  }
+
+  function drawPath(fromId, toId){
+    const from = $(fromId), to = $(toId);
+    if(!from || !to) return;
+    const a = centerOf(from);
+    const b = centerOf(to);
+    const midx = (a.x + b.x)/2;
+    // curve
+    const d = `M ${a.x} ${a.y} C ${midx} ${a.y}, ${midx} ${b.y}, ${b.x} ${b.y}`;
+    $('animPath').setAttribute('d', d);
+  }
+
+  // --- log ---
+  function appendLog(lines){
+    const log = $('log');
+    const now = lines.map(x=>x).join('\n') + '\n';
+    log.textContent += now;
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function setLog(lines){
+    $('log').textContent = lines.join('\n') + (lines.length?'\n':'');
+    $('log').scrollTop = $('log').scrollHeight;
+  }
+
+  // --- inspector ---
+  function renderState(){
+    $('st_devt').textContent = state.devt ?? '未分配';
+    $('st_cdev').innerHTML = state.cdevAdded
+      ? '<span class="pill"><span class="dot good"></span>已建立</span>'
+      : '<span class="pill"><span class="dot bad"></span>未建立</span>';
+    $('st_fops').innerHTML = state.fopsBound
+      ? '<span class="pill"><span class="dot good"></span>已绑定</span>'
+      : '<span class="pill"><span class="dot bad"></span>未绑定</span>';
+    $('st_sysfs').innerHTML = state.sysfs
+      ? '<span class="pill"><span class="dot good"></span>存在</span>'
+      : '<span class="pill"><span class="dot bad"></span>不存在</span>';
+    $('st_devnode').innerHTML = state.devnode
+      ? '<span class="pill"><span class="dot good"></span>存在</span>'
+      : '<span class="pill"><span class="dot bad"></span>不存在</span>';
+    $('st_fileop').innerHTML = state.fileop
+      ? '<span class="pill"><span class="dot good"></span>已设置</span>'
+      : '<span class="pill"><span class="dot bad"></span>未设置</span>';
+
+    $('stack_user').textContent = state.userStack.length ? state.userStack.join(' → ') : '(空)';
+    $('stack_kernel').textContent = state.kernelStack.length ? state.kernelStack.join(' → ') : '(空)';
+    $('phaseBadge').textContent = `阶段：${state.phase}`;
+  }
+
+  // --- step engine ---
+  let idx = 0;
+
+  function resetState(){
+    state.devt = null;
+    state.cdevAdded = false;
+    state.fopsBound = false;
+    state.sysfs = false;
+    state.devnode = false;
+    state.fileop = false;
+    state.userStack = [];
+    state.kernelStack = [];
+    state.phase = '注册线';
+  }
+
+  function applyUpTo(i){
+    resetState();
+    const logs=[];
+    for(let k=0;k<=i;k++){
+      const s = steps[k];
+      if(s.apply) s.apply();
+      if(s.stack){
+        state.userStack = s.stack.user ? [...s.stack.user] : [];
+        state.kernelStack = s.stack.kernel ? [...s.stack.kernel] : [];
+        $('stack_note').textContent = s.stack.note ?? '—';
+      }
+      state.phase = s.phase;
+      if(s.log) logs.push(...s.log);
+    }
+    setLog(logs);
+  }
+
+  function renderStep(i){
+    i = clamp(i, 0, steps.length-1);
+    idx = i;
+    const s = steps[i];
+
+    $('btnPrev').disabled = (i===0);
+    $('btnNext').disabled = (i===steps.length-1);
+
+    $('stepBadge').textContent = `步骤 ${i+1}/${steps.length}`;
+    $('stepExplain').textContent = s.explain;
+    $('stepObserve').textContent = s.observe;
+
+    // domain pill
+    const domainText = {
+      'kernel':'当前：内核态',
+      'user':'当前：用户态',
+      'user->kernel':'当前：用户态 → 内核态',
+      'kernel->user':'当前：内核态 → 用户态'
+    }[s.domain] || `当前：${s.domain}`;
+    $('domainText').textContent = domainText;
+
+    // step list highlight
+    [...stepsEl.children].forEach((li, k)=>{
+      li.classList.toggle('active', k===i);
+    });
+
+    // highlight nodes + draw arrow
+    setHighlights(s.highlight || []);
+    if(s.path && s.path.length>=2) drawPath(s.path[0], s.path[1]);
+
+    // apply state up to step
+    applyUpTo(i);
+    renderState();
+
+    // update “模式”提示
+    $('modeBadge').textContent = state.playing ? '模式：播放中' : '模式：单步调试';
+  }
+
+  function gotoStep(i){
+    stop();
+    renderStep(i);
+  }
+
+  function next(){
+    if(idx < steps.length-1) renderStep(idx+1);
+  }
+
+  function prev(){
+    if(idx > 0) renderStep(idx-1);
+  }
+
+  function play(){
+    if(state.playing) return;
+    state.playing = true;
+    $('btnPlay').textContent = '⏸ 暂停';
+    $('modeBadge').textContent = '模式：播放中';
+    state.timer = setInterval(()=>{
+      if(idx >= steps.length-1){ stop(); return; }
+      renderStep(idx+1);
+    }, 1200);
+  }
+
+  function stop(){
+    state.playing = false;
+    $('btnPlay').textContent = '▶ 播放';
+    $('modeBadge').textContent = '模式：单步调试';
+    if(state.timer) clearInterval(state.timer);
+    state.timer = null;
+  }
+
+  function togglePlay(){
+    if(state.playing) stop();
+    else play();
+  }
+
+  function reset(){
+    stop();
+    $('stack_note').textContent = '—';
+    $('log').textContent = '';
+    renderStep(0);
+  }
+
+  // --- buttons ---
+  $('btnPrev').addEventListener('click', prev);
+  $('btnNext').addEventListener('click', next);
+  $('btnPlay').addEventListener('click', togglePlay);
+  $('btnReset').addEventListener('click', reset);
+  $('btnClearLog').addEventListener('click', ()=>setLog([]));
+
+  // --- keyboard ---
+  window.addEventListener('keydown', (e)=>{
+    if(e.key === 'ArrowRight') { e.preventDefault(); next(); }
+    if(e.key === 'ArrowLeft')  { e.preventDefault(); prev(); }
+    if(e.key === ' ') { e.preventDefault(); togglePlay(); }
+    if(e.key.toLowerCase() === 'r') { e.preventDefault(); reset(); }
+  });
+
+  // initial render after layout
+  window.addEventListener('load', ()=>{
+    renderStep(0);
+    // redraw path on resize
+    window.addEventListener('resize', ()=>{
+      const s = steps[idx];
+      if(s.path && s.path.length>=2) drawPath(s.path[0], s.path[1]);
+    });
+    initFlowBuilder();
+  });
+
+  // --- flow builder: data & runtime ---
+  const flowCards = [
+    {
+      id: 'insmod',
+      title: 'insmod',
+      domain: 'user',
+      phase: '注册线',
+      desc: '加载模块，触发内核初始化',
+      explain: '用户态执行 insmod，内核进入 module_init() 完成初始化。',
+      stack: { user: ['insmod'], kernel: ['finit_module','do_init_module','module_init'] },
+      log: [
+        '$ insmod LED.ko',
+        '[kernel] finit_module()',
+        '[kernel] module_init()'
+      ],
+      note: '从用户态切入内核态的起点。'
+    },
+    {
+      id: 'module_init',
+      title: 'module_init',
+      domain: 'kernel',
+      phase: '注册线',
+      desc: '驱动入口函数',
+      explain: '驱动加载入口，开始申请资源并注册字符设备。',
+      stack: { user: [], kernel: ['module_init'] },
+      log: ['[kernel] module_init(): driver entry'],
+      note: '所有注册动作都从这里开始。'
+    },
+    {
+      id: 'alloc_chrdev_region',
+      title: 'alloc_chrdev_region',
+      domain: 'kernel',
+      phase: '注册线',
+      desc: '动态分配设备号',
+      explain: '为字符设备分配 major/minor。',
+      stack: { user: [], kernel: ['module_init','alloc_chrdev_region'] },
+      log: ['[kernel] alloc_chrdev_region(&devt, 0, 1, "LED")'],
+      note: 'dev_t 是门牌号，本身并不等于设备对象。',
+      apply(state){ state.devt = '255:0 (示例)'; }
+    },
+    {
+      id: 'cdev_init',
+      title: 'cdev_init',
+      domain: 'kernel',
+      phase: '注册线',
+      desc: '绑定 fops',
+      explain: '把 file_operations 与 cdev 绑定。',
+      stack: { user: [], kernel: ['module_init','cdev_init'] },
+      log: ['[kernel] cdev_init(&cdev, &fops)'],
+      note: '决定 open/read/write 指向哪些函数。',
+      apply(state){ state.fopsBound = true; }
+    },
+    {
+      id: 'cdev_add',
+      title: 'cdev_add',
+      domain: 'kernel',
+      phase: '注册线',
+      desc: '注册 cdev',
+      explain: '建立 dev_t -> cdev 的映射。',
+      stack: { user: [], kernel: ['module_init','cdev_add'] },
+      log: ['[kernel] cdev_add(&cdev, devt, 1)'],
+      note: 'VFS 根据 major/minor 找到 cdev。',
+      apply(state){ state.cdevAdded = true; }
+    },
+    {
+      id: 'class_create',
+      title: 'class_create',
+      domain: 'kernel',
+      phase: '注册线',
+      desc: '创建 class',
+      explain: '创建 /sys/class 下的类目录，供用户态查看。',
+      stack: { user: [], kernel: ['module_init','class_create'] },
+      log: ['[kernel] class_create("chrdev_class")'],
+      note: '为 device_create 提供容器。'
+    },
+    {
+      id: 'device_create',
+      title: 'device_create',
+      domain: 'kernel',
+      phase: '注册线',
+      desc: '创建 device + uevent',
+      explain: '生成 /sys/class/.../dev 并触发 uevent。',
+      stack: { user: [], kernel: ['module_init','device_create','kobject_uevent'] },
+      log: [
+        '[kernel] device_create(..., devt=255:0, name="LED")',
+        '[kernel] uevent: add@/class/chrdev_class/LED'
+      ],
+      note: 'udev/mdev 会据此创建 /dev 节点。',
+      apply(state){ state.sysfs = true; }
+    },
+    {
+      id: 'udev_mknod',
+      title: 'udev / mknod',
+      domain: 'user',
+      phase: '注册线',
+      desc: '创建 /dev 节点',
+      explain: '用户态收到 uevent 后调用 mknod/chmod。',
+      stack: { user: ['udev','mknod','chmod'], kernel: ['mknodat','vfs_create'] },
+      log: [
+        '[user] udev: mknod /dev/LED c 255 0',
+        '[kernel] mknodat() -> create char dev node'
+      ],
+      note: '完成后 /dev/LED 可被 open。',
+      apply(state){ state.devnode = true; }
+    },
+    {
+      id: 'open',
+      title: 'open("/dev/LED")',
+      domain: 'user',
+      phase: '调用线',
+      desc: '应用打开设备',
+      explain: '应用发起 open() 系统调用。',
+      stack: { user: ['app:open'], kernel: [] },
+      log: ['[user] open("/dev/LED", O_RDWR)'],
+      note: '用户态 -> 内核态切换发生在 sys_openat。'
+    },
+    {
+      id: 'sys_openat',
+      title: 'sys_openat',
+      domain: 'kernel',
+      phase: '调用线',
+      desc: '系统调用入口',
+      explain: '进入内核，解析路径并准备打开文件。',
+      stack: { user: [], kernel: ['sys_openat','do_sys_open'] },
+      log: ['[kernel] sys_openat() -> do_sys_open()'],
+      note: '内核态开始接管 open 逻辑。'
+    },
+    {
+      id: 'vfs_open',
+      title: 'vfs_open',
+      domain: 'kernel',
+      phase: '调用线',
+      desc: 'VFS 解析',
+      explain: '定位 inode，判断为字符设备。',
+      stack: { user: [], kernel: ['do_filp_open','vfs_open'] },
+      log: ['[kernel] vfs_open(): inode->i_rdev = 255:0'],
+      note: '关键是 inode->i_rdev。'
+    },
+    {
+      id: 'chrdev_open',
+      title: 'chrdev_open',
+      domain: 'kernel',
+      phase: '调用线',
+      desc: '查找 cdev',
+      explain: '根据 major/minor 查表找到 cdev。',
+      stack: { user: [], kernel: ['chrdev_open','kobj_lookup'] },
+      log: ['[kernel] chrdev_open(): lookup cdev by 255:0'],
+      note: '依赖前面的 cdev_add。'
+    },
+    {
+      id: 'set_fops',
+      title: 'file->f_op = cdev->ops',
+      domain: 'kernel',
+      phase: '调用线',
+      desc: '装载 fops',
+      explain: '把 fops 安装到当前 file 对象。',
+      stack: { user: [], kernel: ['chrdev_open','set_fops'] },
+      log: ['[kernel] file->f_op = cdev->ops'],
+      note: '后续 write/read 直接走 fops。',
+      apply(state){ state.fileop = true; }
+    },
+    {
+      id: 'fops_open',
+      title: 'fops->open',
+      domain: 'kernel',
+      phase: '调用线',
+      desc: '进入驱动 open',
+      explain: '调用你实现的 .open 函数。',
+      stack: { user: [], kernel: ['fops->open','driver_open'] },
+      log: ['[driver] char_open(): printk("open ok")'],
+      note: '可在此初始化硬件或 private_data。'
+    },
+    {
+      id: 'write',
+      title: 'write(fd, 1)',
+      domain: 'user',
+      phase: '调用线',
+      desc: '应用写设备',
+      explain: '应用调用 write() 进入内核。',
+      stack: { user: ['app:write'], kernel: [] },
+      log: ['[user] write(fd, 1)'],
+      note: '真正执行在 sys_write。'
+    },
+    {
+      id: 'sys_write',
+      title: 'sys_write',
+      domain: 'kernel',
+      phase: '调用线',
+      desc: '系统调用入口',
+      explain: '内核接管 write，转入 vfs_write。',
+      stack: { user: [], kernel: ['sys_write','vfs_write'] },
+      log: ['[kernel] sys_write() -> vfs_write()'],
+      note: 'file->f_op 已经准备好。'
+    },
+    {
+      id: 'fops_write',
+      title: 'fops->write',
+      domain: 'kernel',
+      phase: '调用线',
+      desc: '进入驱动 write',
+      explain: '执行你实现的 .write 函数。',
+      stack: { user: [], kernel: ['fops->write','driver_write'] },
+      log: ['[driver] char_write(): handling data'],
+      note: '常见会调用 copy_from_user。'
+    },
+    {
+      id: 'copy_from_user',
+      title: 'copy_from_user',
+      domain: 'kernel',
+      phase: '调用线',
+      desc: '拷贝用户数据',
+      explain: '安全地把用户态数据拷贝到内核缓冲区。',
+      stack: { user: [], kernel: ['copy_from_user'] },
+      log: ['[kernel] copy_from_user()'],
+      note: '避免直接解引用用户指针。'
+    },
+    {
+      id: 'rmmod',
+      title: 'rmmod',
+      domain: 'user',
+      phase: '卸载线',
+      desc: '卸载模块',
+      explain: '用户态执行 rmmod，触发 module_exit。',
+      stack: { user: ['rmmod'], kernel: ['delete_module','module_exit'] },
+      log: ['[user] rmmod LED', '[kernel] module_exit()'],
+      note: '进入卸载流程。'
+    },
+    {
+      id: 'module_exit',
+      title: 'module_exit',
+      domain: 'kernel',
+      phase: '卸载线',
+      desc: '驱动出口函数',
+      explain: '释放资源并反注册字符设备。',
+      stack: { user: [], kernel: ['module_exit'] },
+      log: ['[kernel] module_exit(): driver exit'],
+      note: '与 module_init 形成闭环。'
+    },
+    {
+      id: 'device_destroy',
+      title: 'device_destroy',
+      domain: 'kernel',
+      phase: '卸载线',
+      desc: '销毁 device',
+      explain: '删除 sysfs 设备对象并发出 remove 事件。',
+      stack: { user: [], kernel: ['device_destroy'] },
+      log: ['[kernel] device_destroy()'],
+      note: '/dev 节点可能被 udev 清理。',
+      apply(state){ state.sysfs = false; state.devnode = false; }
+    },
+    {
+      id: 'class_destroy',
+      title: 'class_destroy',
+      domain: 'kernel',
+      phase: '卸载线',
+      desc: '销毁 class',
+      explain: '清理 /sys/class 下的类目录。',
+      stack: { user: [], kernel: ['class_destroy'] },
+      log: ['[kernel] class_destroy()'],
+      note: '释放 class 资源。'
+    },
+    {
+      id: 'cdev_del',
+      title: 'cdev_del',
+      domain: 'kernel',
+      phase: '卸载线',
+      desc: '移除 cdev',
+      explain: '从 chrdev 映射表中删除 cdev。',
+      stack: { user: [], kernel: ['cdev_del'] },
+      log: ['[kernel] cdev_del(&cdev)'],
+      note: 'open 将无法再定位到驱动。',
+      apply(state){ state.cdevAdded = false; state.fopsBound = false; state.fileop = false; }
+    },
+    {
+      id: 'unregister_chrdev_region',
+      title: 'unregister_chrdev_region',
+      domain: 'kernel',
+      phase: '卸载线',
+      desc: '释放设备号',
+      explain: '释放之前分配的 dev_t。',
+      stack: { user: [], kernel: ['unregister_chrdev_region'] },
+      log: ['[kernel] unregister_chrdev_region(devt, 1)'],
+      note: '设备号归还给系统。',
+      apply(state){ state.devt = null; }
+    }
+  ];
+
+  const flowCardsById = Object.fromEntries(flowCards.map(c=>[c.id, c]));
+  const flowDefault = [
+    'insmod','module_init','alloc_chrdev_region','cdev_init','cdev_add',
+    'class_create','device_create','udev_mknod',
+    'open','sys_openat','vfs_open','chrdev_open','set_fops','fops_open',
+    'write','sys_write','fops_write','copy_from_user'
+  ];
+
+  const flowState = {
+    items: [],
+    idx: -1,
+    playing: false,
+    timer: null,
+    devt: null,
+    cdevAdded: false,
+    fopsBound: false,
+    sysfs: false,
+    devnode: false,
+    fileop: false
+  };
+
+  let flowInstanceCounter = 0;
+  const flowInstances = new Map();
+
+  let flowEls = {};
+
+  function initFlowBuilder(){
+    flowEls = {
+      palette: $('flowPalette'),
+      list: $('flowList'),
+      empty: $('flowEmpty'),
+      modeBadge: $('flowModeBadge'),
+      domainPill: $('flowDomainPill'),
+      domainText: $('flowDomainText'),
+      phasePill: $('flowPhasePill'),
+      current: $('flowCurrent'),
+      explain: $('flowExplain'),
+      flowSwitch: $('flowSwitch'),
+      stackUser: $('flowStackUser'),
+      stackKernel: $('flowStackKernel'),
+      stackNote: $('flowStackNote'),
+      stateDevt: $('flowStateDevt'),
+      stateCdev: $('flowStateCdev'),
+      stateFops: $('flowStateFops'),
+      stateSysfs: $('flowStateSysfs'),
+      stateDevnode: $('flowStateDevnode'),
+      stateFileop: $('flowStateFileop'),
+      log: $('flowLog'),
+      btnSample: $('btnFlowSample'),
+      btnStep: $('btnFlowStep'),
+      btnPlay: $('btnFlowPlay'),
+      btnReset: $('btnFlowReset'),
+      btnClear: $('btnFlowClear'),
+      btnClearLog: $('btnFlowClearLog')
+    };
+    if(!flowEls.palette || !flowEls.list) return;
+
+    renderFlowPalette();
+    bindFlowDnD();
+
+    flowEls.btnSample.addEventListener('click', loadFlowSample);
+    flowEls.btnStep.addEventListener('click', flowNext);
+    flowEls.btnPlay.addEventListener('click', flowTogglePlay);
+    flowEls.btnReset.addEventListener('click', flowReset);
+    flowEls.btnClear.addEventListener('click', flowClear);
+    flowEls.btnClearLog.addEventListener('click', ()=>setFlowLog([]));
+
+    flowReset();
+  }
+
+  function renderFlowPalette(){
+    flowEls.palette.innerHTML = '';
+    flowCards.forEach(card=>{
+      const el = createFlowCard(card, null);
+      el.classList.add('palette-card');
+      el.addEventListener('click', ()=>addFlowCard(card.id, null));
+      flowEls.palette.appendChild(el);
+    });
+  }
+
+  function createFlowCard(card, instanceId){
+    const el = document.createElement('div');
+    el.className = 'flow-card';
+    el.dataset.cardId = card.id;
+    el.dataset.domain = card.domain;
+    if(instanceId) el.dataset.instanceId = instanceId;
+    el.innerHTML = `
+      <div class="top">
+        <div class="name">${card.title}</div>
+        <span class="badge ${card.domain === 'kernel' ? 'kernel' : 'user'}">${card.domain === 'kernel' ? '内核态' : '用户态'}</span>
+      </div>
+      <div class="desc">${card.desc}</div>
+    `;
+    if(instanceId){
+      el.draggable = true;
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'flow-remove';
+      removeBtn.textContent = '移除';
+      removeBtn.addEventListener('click', (e)=>{
+        e.stopPropagation();
+        removeFlowCard(instanceId);
+      });
+      el.querySelector('.top').appendChild(removeBtn);
+      el.addEventListener('dragstart', (e)=>{
+        e.dataTransfer.setData('text/plain', instanceId);
+        e.dataTransfer.effectAllowed = 'move';
+        el.classList.add('dragging');
+      });
+      el.addEventListener('dragend', ()=>{
+        el.classList.remove('dragging');
+        syncFlowItems();
+      });
+    }
+    return el;
+  }
+
+  function addFlowCard(cardId, insertBefore){
+    const card = flowCardsById[cardId];
+    if(!card) return;
+    const instanceId = `flow_${++flowInstanceCounter}`;
+    flowInstances.set(instanceId, card);
+    const el = createFlowCard(card, instanceId);
+    if(insertBefore){
+      flowEls.list.insertBefore(el, insertBefore);
+    }else{
+      flowEls.list.appendChild(el);
+    }
+    syncFlowItems();
+  }
+
+  function removeFlowCard(instanceId){
+    const el = flowEls.list.querySelector(`[data-instance-id="${instanceId}"]`);
+    if(el) el.remove();
+    flowInstances.delete(instanceId);
+    syncFlowItems();
+  }
+
+  function bindFlowDnD(){
+    flowEls.list.addEventListener('dragover', (e)=>{
+      e.preventDefault();
+      const dragging = flowEls.list.querySelector('.flow-card.dragging');
+      const afterElement = getDragAfterElement(flowEls.list, e.clientY);
+      if(dragging){
+        if(afterElement == null){
+          flowEls.list.appendChild(dragging);
+        }else if(afterElement !== dragging){
+          flowEls.list.insertBefore(dragging, afterElement);
+        }
+      }
+    });
+
+    flowEls.list.addEventListener('drop', (e)=>{
+      e.preventDefault();
+      const payload = e.dataTransfer.getData('text/plain');
+      if(payload.startsWith('flow_')){
+        syncFlowItems();
+        return;
+      }
+      const afterElement = getDragAfterElement(flowEls.list, e.clientY);
+      addFlowCard(payload, afterElement);
+    });
+  }
+
+  function getDragAfterElement(container, y){
+    const draggableElements = [...container.querySelectorAll('.flow-card:not(.dragging)')];
+    return draggableElements.reduce((closest, child)=>{
+      const box = child.getBoundingClientRect();
+      const offset = y - box.top - box.height / 2;
+      if(offset < 0 && offset > closest.offset){
+        return { offset, element: child };
+      }
+      return closest;
+    }, { offset: Number.NEGATIVE_INFINITY, element: null }).element;
+  }
+
+  function syncFlowItems(){
+    flowStop();
+    flowState.items = [...flowEls.list.querySelectorAll('.flow-card')]
+      .map(el=>el.dataset.instanceId)
+      .filter(Boolean);
+    updateFlowEmpty();
+    flowResetRuntime();
+    flowRenderDebug(null, null);
+    flowSetButtons();
+  }
+
+  function updateFlowEmpty(){
+    flowEls.empty.style.display = flowState.items.length ? 'none' : 'block';
+  }
+
+  function flowResetRuntime(resetIndex = true){
+    if(resetIndex) flowState.idx = -1;
+    flowState.devt = null;
+    flowState.cdevAdded = false;
+    flowState.fopsBound = false;
+    flowState.sysfs = false;
+    flowState.devnode = false;
+    flowState.fileop = false;
+    setFlowLog([]);
+    flowHighlight(null);
+    flowRenderState();
+  }
+
+  function flowRenderState(){
+    flowEls.stateDevt.textContent = flowState.devt ?? '未分配';
+    flowEls.stateCdev.innerHTML = flowState.cdevAdded
+      ? '<span class="pill"><span class="dot good"></span>已建立</span>'
+      : '<span class="pill"><span class="dot bad"></span>未建立</span>';
+    flowEls.stateFops.innerHTML = flowState.fopsBound
+      ? '<span class="pill"><span class="dot good"></span>已绑定</span>'
+      : '<span class="pill"><span class="dot bad"></span>未绑定</span>';
+    flowEls.stateSysfs.innerHTML = flowState.sysfs
+      ? '<span class="pill"><span class="dot good"></span>存在</span>'
+      : '<span class="pill"><span class="dot bad"></span>不存在</span>';
+    flowEls.stateDevnode.innerHTML = flowState.devnode
+      ? '<span class="pill"><span class="dot good"></span>存在</span>'
+      : '<span class="pill"><span class="dot bad"></span>不存在</span>';
+    flowEls.stateFileop.innerHTML = flowState.fileop
+      ? '<span class="pill"><span class="dot good"></span>已设置</span>'
+      : '<span class="pill"><span class="dot bad"></span>未设置</span>';
+  }
+
+  function flowSetButtons(){
+    const hasItems = flowState.items.length > 0;
+    flowEls.btnStep.disabled = !hasItems;
+    flowEls.btnPlay.disabled = !hasItems;
+    flowEls.btnReset.disabled = !hasItems;
+  }
+
+  function flowRenderDebug(card, prevCard){
+    const domainText = card
+      ? (card.domain === 'kernel' ? '当前：内核态' : '当前：用户态')
+      : '当前：未开始';
+    flowEls.domainText.textContent = domainText;
+    flowEls.phasePill.textContent = `阶段：${card ? card.phase : '-'}`;
+
+    const dotEl = flowEls.domainPill.querySelector('.dot');
+    dotEl.className = 'dot ' + (card ? (card.domain === 'kernel' ? 'kernel' : 'good') : 'warn');
+
+    flowEls.current.textContent = card ? card.title : '（空）';
+    flowEls.explain.textContent = card ? card.explain : '-';
+
+    let switchText = '-';
+    if(card){
+      if(prevCard && prevCard.domain !== card.domain){
+        switchText = `${prevCard.domain === 'kernel' ? '内核态' : '用户态'} → ${card.domain === 'kernel' ? '内核态' : '用户态'}`;
+      }else{
+        switchText = `${card.domain === 'kernel' ? '内核态' : '用户态'}（保持）`;
+      }
+    }
+    flowEls.flowSwitch.textContent = switchText;
+
+    const stackUser = card?.stack?.user?.length ? card.stack.user.join(' → ') : '(空)';
+    const stackKernel = card?.stack?.kernel?.length ? card.stack.kernel.join(' → ') : '(空)';
+    flowEls.stackUser.textContent = stackUser;
+    flowEls.stackKernel.textContent = stackKernel;
+    flowEls.stackNote.textContent = card?.note ?? '-';
+
+    flowRenderState();
+  }
+
+  function flowHighlight(instanceId){
+    [...flowEls.list.querySelectorAll('.flow-card')].forEach(el=>{
+      el.classList.toggle('active', el.dataset.instanceId === instanceId);
+    });
+  }
+
+  function applyFlowUpTo(i){
+    flowResetRuntime(false);
+    const logs = [];
+    for(let k=0;k<=i;k++){
+      const instanceId = flowState.items[k];
+      const card = flowInstances.get(instanceId);
+      if(!card) continue;
+      if(card.apply) card.apply(flowState);
+      if(card.log) logs.push(...card.log);
+    }
+    setFlowLog(logs);
+  }
+
+  function flowNext(){
+    if(flowState.items.length === 0) return;
+    if(flowState.idx >= flowState.items.length - 1){
+      flowStop();
+      return;
+    }
+    const prevInstance = flowState.idx >= 0 ? flowState.items[flowState.idx] : null;
+    flowState.idx += 1;
+    const instanceId = flowState.items[flowState.idx];
+    const card = flowInstances.get(instanceId);
+    const prevCard = prevInstance ? flowInstances.get(prevInstance) : null;
+    applyFlowUpTo(flowState.idx);
+    flowRenderDebug(card, prevCard);
+    flowHighlight(instanceId);
+  }
+
+  function flowPlay(){
+    if(flowState.playing || flowState.items.length === 0) return;
+    flowState.playing = true;
+    flowEls.btnPlay.textContent = '暂停';
+    flowEls.modeBadge.textContent = '模式：播放中';
+    flowState.timer = setInterval(()=>{
+      if(flowState.idx >= flowState.items.length - 1){
+        flowStop();
+        return;
+      }
+      flowNext();
+    }, 1200);
+  }
+
+  function flowStop(){
+    flowState.playing = false;
+    flowEls.btnPlay.textContent = '播放';
+    flowEls.modeBadge.textContent = '模式：编辑';
+    if(flowState.timer) clearInterval(flowState.timer);
+    flowState.timer = null;
+  }
+
+  function flowTogglePlay(){
+    if(flowState.playing) flowStop();
+    else flowPlay();
+  }
+
+  function flowReset(){
+    flowStop();
+    flowResetRuntime();
+    flowRenderDebug(null, null);
+    flowSetButtons();
+  }
+
+  function flowClear(){
+    flowStop();
+    flowEls.list.innerHTML = '';
+    flowInstances.clear();
+    flowState.items = [];
+    updateFlowEmpty();
+    flowResetRuntime();
+    flowRenderDebug(null, null);
+    flowSetButtons();
+  }
+
+  function loadFlowSample(){
+    flowClear();
+    flowDefault.forEach(id=>addFlowCard(id, null));
+    flowResetRuntime();
+    flowRenderDebug(null, null);
+    flowSetButtons();
+  }
+
+  function setFlowLog(lines){
+    flowEls.log.textContent = lines.join('\n') + (lines.length ? '\n' : '');
+    flowEls.log.scrollTop = flowEls.log.scrollHeight;
+  }
+</script>
+</body>
+</html>
